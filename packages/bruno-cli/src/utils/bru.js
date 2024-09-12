@@ -96,7 +96,13 @@ const getEnvVars = (environment = {}) => {
   return envVars;
 };
 
-const options = {};
+const options = {
+  bail: false,
+  insecure: false,
+  cacert: null,
+  ignoreTruststore: null,
+  runtime: getJsSandboxRuntime('safe'),
+};
 const getOptions = () => {
   return options;
 };

@@ -300,253 +300,49 @@ const handler = async function (argv) {
     // todo
     // right now, bru must be run from the root of the collection
     // will add support in the future to run it from anywhere inside the collection
-    const brunoJsonPath = path.join(collectionPath, 'bruno.json');
-    const brunoJsonExists = await exists(brunoJsonPath);
-    if (!brunoJsonExists) {
-      console.error(chalk.red(`You can run only at the root of a collection`));
-      process.exit(constants.EXIT_STATUS.ERROR_NOT_IN_COLLECTION);
-    }
+    const brunoJsonPath = await verifyCwdAtCollectionRoot(collectionPath);
 
     const brunoConfigFile = fs.readFileSync(brunoJsonPath, 'utf8');
     const brunoConfig = JSON.parse(brunoConfigFile);
     const collectionRoot = getCollectionRoot(collectionPath);
 
-    if (filename && filename.length) {
-      const pathExists = await exists(filename);
-      if (!pathExists) {
-        console.error(chalk.red(`File or directory ${filename} does not exist`));
-        process.exit(constants.EXIT_STATUS.ERROR_FILE_NOT_FOUND);
-      }
-    } else {
+    if (!await isSingleRequest(filename)) {
       filename = './';
       recursive = true;
     }
 
-    const runtimeVariables = {};
     let envVars = {};
 
     if (env) {
-      const envFile = path.join(collectionPath, 'environments', `${env}.bru`);
-      const envPathExists = await exists(envFile);
-
-      if (!envPathExists) {
-        console.error(chalk.red(`Environment file not found: `) + chalk.dim(`environments/${env}.bru`));
-        process.exit(constants.EXIT_STATUS.ERROR_ENV_NOT_FOUND);
-      }
-
-      const envBruContent = fs.readFileSync(envFile, 'utf8');
-      const envJson = bruToEnvJson(envBruContent);
-      envVars = getEnvVars(envJson);
+      envVars = getEnvVars(await loadEnv(collectionPath, env));
       envVars.__name__ = env;
     }
 
     if (envVar) {
-      let processVars;
-      if (typeof envVar === 'string') {
-        processVars = [envVar];
-      } else if (typeof envVar === 'object' && Array.isArray(envVar)) {
-        processVars = envVar;
-      } else {
-        console.error(chalk.red(`overridable environment variables not parsable: use name=value`));
-        process.exit(constants.EXIT_STATUS.ERROR_MALFORMED_ENV_OVERRIDE);
-      }
-      if (processVars && Array.isArray(processVars)) {
-        for (const value of processVars.values()) {
-          // split the string at the first equals sign
-          const match = value.match(/^([^=]+)=(.*)$/);
-          if (!match) {
-            console.error(
-              chalk.red(`Overridable environment variable not correct: use name=value - presented: `) +
-                chalk.dim(`${value}`)
-            );
-            process.exit(constants.EXIT_STATUS.ERROR_INCORRECT_ENV_OVERRIDE);
-          }
-          envVars[match[1]] = match[2];
-        }
-      }
+      doProcessEnvVars(envVar, envVars);
     }
 
     const options = getOptions();
-    if (bail) {
-      options['bail'] = true;
-    }
-    if (insecure) {
-      options['insecure'] = true;
-    }
-    if (cacert && cacert.length) {
-      if (insecure) {
-        console.error(chalk.red(`Ignoring the cacert option since insecure connections are enabled`));
-      } else {
-        const pathExists = await exists(cacert);
-        if (pathExists) {
-          options['cacert'] = cacert;
-        } else {
-          console.error(chalk.red(`Cacert File ${cacert} does not exist`));
-        }
-      }
-    }
-    options['ignoreTruststore'] = ignoreTruststore;
+    options.bail = bail ? true : options.bail;
+    options.insecure = insecure ? true : options.insecure;
+    options.cacert = getCaCert(cacert, insecure);
+    options.ignoreTruststore = ignoreTruststore;
+    options.runtime = getJsSandboxRuntime(sandbox);
 
-    if (['json', 'junit', 'html'].indexOf(format) === -1) {
-      console.error(chalk.red(`Format must be one of "json", "junit or "html"`));
-      process.exit(constants.EXIT_STATUS.ERROR_INCORRECT_OUTPUT_FORMAT);
-    }
+    verifyOutputFormat(format);
 
     // load .env file at root of collection if it exists
-    const dotEnvPath = path.join(collectionPath, '.env');
-    const dotEnvExists = await exists(dotEnvPath);
-    const processEnvVars = {
-      ...process.env
-    };
-    if (dotEnvExists) {
-      const content = fs.readFileSync(dotEnvPath, 'utf8');
-      const jsonData = dotenvToJson(content);
+    const processEnvVars = await processDotEnvFile(collectionPath);
 
-      forOwn(jsonData, (value, key) => {
-        processEnvVars[key] = value;
-      });
-    }
+    let bruJsons = getBruJsons(filename, recursive, testsOnly);
 
-    const _isFile = isFile(filename);
-    let results = [];
-
-    let bruJsons = [];
-
-    if (_isFile) {
-      console.log(chalk.yellow('Running Request \n'));
-      const bruContent = fs.readFileSync(filename, 'utf8');
-      const bruJson = bruToJson(bruContent);
-      bruJsons.push({
-        bruFilepath: filename,
-        bruJson
-      });
-    }
-
-    const _isDirectory = isDirectory(filename);
-    if (_isDirectory) {
-      if (!recursive) {
-        console.log(chalk.yellow('Running Folder \n'));
-        const files = fs.readdirSync(filename);
-        const bruFiles = files.filter((file) => !['folder.bru'].includes(file) && file.endsWith('.bru'));
-
-        for (const bruFile of bruFiles) {
-          const bruFilepath = path.join(filename, bruFile);
-          const bruContent = fs.readFileSync(bruFilepath, 'utf8');
-          const bruJson = bruToJson(bruContent);
-          const requestHasTests = bruJson.request?.tests;
-          const requestHasActiveAsserts = bruJson.request?.assertions.some((x) => x.enabled) || false;
-          if (testsOnly) {
-            if (requestHasTests || requestHasActiveAsserts) {
-              bruJsons.push({
-                bruFilepath,
-                bruJson
-              });
-            }
-          } else {
-            bruJsons.push({
-              bruFilepath,
-              bruJson
-            });
-          }
-        }
-        bruJsons.sort((a, b) => {
-          const aSequence = a.bruJson.seq || 0;
-          const bSequence = b.bruJson.seq || 0;
-          return aSequence - bSequence;
-        });
-      } else {
-        console.log(chalk.yellow('Running Folder Recursively \n'));
-
-        bruJsons = getBruFilesRecursively(filename, testsOnly);
-      }
-    }
-
-    const runtime = getJsSandboxRuntime(sandbox);
-    let currentRequestIndex = 0;
-    let nJumps = 0; // count the number of jumps to avoid infinite loops
-    while (currentRequestIndex < bruJsons.length) {
-      const iter = bruJsons[currentRequestIndex];
-      const { bruFilepath, bruJson } = iter;
-
-      const start = process.hrtime();
-      const result = await runSingleRequest(
-        bruFilepath,
-        bruJson,
-        collectionPath,
-        runtimeVariables,
-        envVars,
-        processEnvVars,
-        brunoConfig,
-        collectionRoot,
-        runtime
-      );
-
-      results.push({
-        ...result,
-        runtime: process.hrtime(start)[0] + process.hrtime(start)[1] / 1e9,
-        suitename: bruFilepath.replace('.bru', '')
-      });
-
-      // bail if option is set and there is a failure
-      if (bail) {
-        const requestFailure = result?.error;
-        const testFailure = result?.testResults?.find((iter) => iter.status === 'fail');
-        const assertionFailure = result?.assertionResults?.find((iter) => iter.status === 'fail');
-        if (requestFailure || testFailure || assertionFailure) {
-          break;
-        }
-      }
-
-      // determine next request
-      const nextRequestName = result?.nextRequestName;
-      if (nextRequestName !== undefined) {
-        nJumps++;
-        if (nJumps > 10000) {
-          console.error(chalk.red(`Too many jumps, possible infinite loop`));
-          process.exit(constants.EXIT_STATUS.ERROR_INFINTE_LOOP);
-        }
-        if (nextRequestName === null) {
-          break;
-        }
-        const nextRequestIdx = bruJsons.findIndex((iter) => iter.bruJson.name === nextRequestName);
-        if (nextRequestIdx >= 0) {
-          currentRequestIndex = nextRequestIdx;
-        } else {
-          console.error("Could not find request with name '" + nextRequestName + "'");
-          currentRequestIndex++;
-        }
-      } else {
-        currentRequestIndex++;
-      }
-    }
+    let results = await executeRequests(bruJsons, collectionPath, envVars, processEnvVars, brunoConfig, collectionRoot, options);
 
     const summary = printRunSummary(results);
     const totalTime = results.reduce((acc, res) => acc + res.response.responseTime, 0);
     console.log(chalk.dim(chalk.grey(`Ran all requests - ${totalTime} ms`)));
 
-    if (outputPath && outputPath.length) {
-      const outputDir = path.dirname(outputPath);
-      const outputDirExists = await exists(outputDir);
-      if (!outputDirExists) {
-        console.error(chalk.red(`Output directory ${outputDir} does not exist`));
-        process.exit(constants.EXIT_STATUS.ERROR_MISSING_OUTPUT_DIR);
-      }
-
-      const outputJson = {
-        summary,
-        results
-      };
-
-      if (format === 'json') {
-        fs.writeFileSync(outputPath, JSON.stringify(outputJson, null, 2));
-      } else if (format === 'junit') {
-        makeJUnitOutput(results, outputPath);
-      } else if (format === 'html') {
-        makeHtmlOutput(outputJson, outputPath);
-      }
-
-      console.log(chalk.dim(chalk.grey(`Wrote results to ${outputPath}`)));
-    }
+    await writeOutputReport(outputPath, summary, results, format);
 
     if (summary.failedAssertions + summary.failedTests + summary.failedRequests > 0) {
       process.exit(constants.EXIT_STATUS.ERROR_FAILED_COLLECTION);
@@ -556,6 +352,7 @@ const handler = async function (argv) {
     console.error(chalk.red(err.message));
     process.exit(constants.EXIT_STATUS.ERROR_GENERIC);
   }
+
 };
 
 module.exports = {
@@ -565,3 +362,290 @@ module.exports = {
   handler,
   printRunSummary
 };
+
+/**
+ * 
+ * @param {String} outputPath 
+ * @param {Object} summary 
+ * @param {Object[]} results 
+ * @param {'json'|'junit'|'html'} format 
+ */
+async function writeOutputReport(outputPath, summary, results, format) {
+  if (outputPath && outputPath.length) {
+    const outputDir = path.dirname(outputPath);
+    const outputDirExists = await exists(outputDir);
+    if (!outputDirExists) {
+      console.error(chalk.red(`Output directory ${outputDir} does not exist`));
+      process.exit(constants.EXIT_STATUS.ERROR_MISSING_OUTPUT_DIR);
+    }
+
+    const outputJson = {
+      summary,
+      results
+    };
+
+    if (format === 'json') {
+      fs.writeFileSync(outputPath, JSON.stringify(outputJson, null, 2));
+    } else if (format === 'junit') {
+      makeJUnitOutput(results, outputPath);
+    } else if (format === 'html') {
+      makeHtmlOutput(outputJson, outputPath);
+    }
+
+    console.log(chalk.dim(chalk.grey(`Wrote results to ${outputPath}`)));
+  }
+}
+
+async function executeRequests(bruJsons, collectionPath, envVars, processEnvVars, brunoConfig, collectionRoot, options) {
+  let results = [];
+  let currentRequestIndex = 0;
+  let nJumps = 0; // count the number of jumps to avoid infinite loops
+  while (currentRequestIndex < bruJsons.length) {
+    const iter = bruJsons[currentRequestIndex];
+    const { bruFilepath, bruJson } = iter;
+
+    const start = process.hrtime();
+    const result = await runSingleRequest(
+      bruFilepath,
+      bruJson,
+      collectionPath,
+      {},
+      envVars,
+      processEnvVars,
+      brunoConfig,
+      collectionRoot,
+      options.runtime
+    );
+
+    results.push({
+      ...result,
+      runtime: process.hrtime(start)[0] + process.hrtime(start)[1] / 1e9,
+      suitename: bruFilepath.replace('.bru', '')
+    });
+
+    // bail if option is set and there is a failure
+    if (options.bail) {
+      const requestFailure = result?.error;
+      const testFailure = result?.testResults?.find((iter) => iter.status === 'fail');
+      const assertionFailure = result?.assertionResults?.find((iter) => iter.status === 'fail');
+      if (requestFailure || testFailure || assertionFailure) {
+        break;
+      }
+    }
+
+    // determine next request
+    const nextRequestName = result?.nextRequestName;
+    if (nextRequestName !== undefined) {
+      nJumps++;
+      if (nJumps > 10000) {
+        console.error(chalk.red(`Too many jumps, possible infinite loop`));
+        process.exit(constants.EXIT_STATUS.ERROR_INFINTE_LOOP);
+      }
+      if (nextRequestName === null) {
+        break;
+      }
+      const nextRequestIdx = bruJsons.findIndex((iter) => iter.bruJson.name === nextRequestName);
+      if (nextRequestIdx >= 0) {
+        currentRequestIndex = nextRequestIdx;
+      } else {
+        console.error("Could not find request with name '" + nextRequestName + "'");
+        currentRequestIndex++;
+      }
+    } else {
+      currentRequestIndex++;
+    }
+  }
+  return results;
+}
+
+/**
+ * Open and parse .env file at collection root path if it exists.
+ * 
+ * @param {String} collectionPath 
+ * @returns {Object}
+ */
+async function processDotEnvFile(collectionPath) {
+  const processEnvVars = {
+    ...process.env
+  };
+  const dotEnvPath = path.join(collectionPath, '.env');
+  const dotEnvExists = await exists(dotEnvPath);
+  if (dotEnvExists) {
+    const content = fs.readFileSync(dotEnvPath, 'utf8');
+    const jsonData = dotenvToJson(content);
+
+    forOwn(jsonData, (value, key) => {
+      processEnvVars[key] = value;
+    });
+  }
+  return processEnvVars;
+}
+
+/**
+ * Verify the provided output format is valid. Exits process if invalid.
+ * 
+ * @param {String} format 
+ */
+function verifyOutputFormat(format) {
+  if (['json', 'junit', 'html'].indexOf(format) === -1) {
+    console.error(chalk.red(`Format must be one of "json", "junit or "html"`));
+    process.exit(constants.EXIT_STATUS.ERROR_INCORRECT_OUTPUT_FORMAT);
+  }
+}
+
+async function getCaCert(cacert, insecure) {
+  if (!(cacert && cacert.length))
+    return null;
+
+  if (insecure) {
+    console.error(chalk.red(`Ignoring the cacert option since insecure connections are enabled`));
+    return null;
+  } 
+
+  const pathExists = await exists(cacert);
+  if (!pathExists) {
+    console.error(chalk.red(`Cacert File ${cacert} does not exist`));
+    return null;
+  }
+  return cacert;
+}
+
+/**
+ * 
+ * @param {*} envVar 
+ * @param {*} envVars 
+ */
+function doProcessEnvVars(envVar, envVars) {
+  let processVars;
+  if (typeof envVar === 'string') {
+    processVars = [envVar];
+  } else if (typeof envVar === 'object' && Array.isArray(envVar)) {
+    processVars = envVar;
+  } else {
+    console.error(chalk.red(`overridable environment variables not parsable: use name=value`));
+    process.exit(constants.EXIT_STATUS.ERROR_MALFORMED_ENV_OVERRIDE);
+  }
+  if (processVars && Array.isArray(processVars)) {
+    for (const value of processVars.values()) {
+      // split the string at the first equals sign
+      const match = value.match(/^([^=]+)=(.*)$/);
+      if (!match) {
+        console.error(
+          chalk.red(`Overridable environment variable not correct: use name=value - presented: `) +
+          chalk.dim(`${value}`)
+        );
+        process.exit(constants.EXIT_STATUS.ERROR_INCORRECT_ENV_OVERRIDE);
+      }
+      envVars[match[1]] = match[2];
+    }
+  }
+}
+
+/**
+ * Exits the process if a filename is provided but does not exist.
+ * 
+ * @param {String} filename 
+ * @returns  True if filename is provided and exists. False if file name is unspecified.
+ */
+async function isSingleRequest(filename) {
+  if (filename && filename.length) {
+    const pathExists = await exists(filename);
+    if (!pathExists) {
+      console.error(chalk.red(`File or directory ${filename} does not exist`));
+      process.exit(constants.EXIT_STATUS.ERROR_FILE_NOT_FOUND);
+    }
+    return true;
+  }
+  return false;
+}
+
+async function verifyCwdAtCollectionRoot(collectionPath) {
+  const brunoJsonPath = path.join(collectionPath, 'bruno.json');
+  const brunoJsonExists = await exists(brunoJsonPath);
+  if (!brunoJsonExists) {
+    console.error(chalk.red(`You can run only at the root of a collection`));
+    process.exit(constants.EXIT_STATUS.ERROR_NOT_IN_COLLECTION);
+  }
+  return brunoJsonPath;
+}
+
+/**
+ * Loads a bruno environment, or exits the process if provided environment does not exist.
+ * 
+ * @param {String} collectionPath 
+ * @param {String} env 
+ * @returns 
+ */
+async function loadEnv(collectionPath, env) {
+  const envFile = path.join(collectionPath, 'environments', `${env}.bru`);
+  const envPathExists = await exists(envFile);
+
+  if (!envPathExists) {
+    console.error(chalk.red(`Environment file not found: `) + chalk.dim(`environments/${env}.bru`));
+    process.exit(constants.EXIT_STATUS.ERROR_ENV_NOT_FOUND);
+  }
+
+  const envBruContent = fs.readFileSync(envFile, 'utf8');
+  return bruToEnvJson(envBruContent);
+}
+
+
+/**
+ * 
+ * @param {String} filename 
+ * @param {boolean} recursive 
+ * @param {boolean} testsOnly
+ * @returns 
+ */
+function getBruJsons(filename, recursive, testsOnly) {
+  const _isFile = isFile(filename);
+  const _isDirectory = isDirectory(filename);
+  let bruJsons = [];
+  if (_isFile) {
+    console.log(chalk.yellow('Running Request \n'));
+    const bruContent = fs.readFileSync(filename, 'utf8');
+    const bruJson = bruToJson(bruContent);
+    bruJsons.push({
+      bruFilepath: filename,
+      bruJson
+    });
+  }
+  if (_isDirectory) {
+    if (!recursive) {
+      console.log(chalk.yellow('Running Folder \n'));
+      const files = fs.readdirSync(filename);
+      const bruFiles = files.filter((file) => !['folder.bru'].includes(file) && file.endsWith('.bru'));
+
+      for (const bruFile of bruFiles) {
+        const bruFilepath = path.join(filename, bruFile);
+        const bruContent = fs.readFileSync(bruFilepath, 'utf8');
+        const bruJson = bruToJson(bruContent);
+        const requestHasTests = bruJson.request?.tests;
+        const requestHasActiveAsserts = bruJson.request?.assertions.some((x) => x.enabled) || false;
+        if (testsOnly) {
+          if (requestHasTests || requestHasActiveAsserts) {
+            bruJsons.push({
+              bruFilepath,
+              bruJson
+            });
+          }
+        } else {
+          bruJsons.push({
+            bruFilepath,
+            bruJson
+          });
+        }
+      }
+      bruJsons.sort((a, b) => {
+        const aSequence = a.bruJson.seq || 0;
+        const bSequence = b.bruJson.seq || 0;
+        return aSequence - bSequence;
+      });
+    } else {
+      console.log(chalk.yellow('Running Folder Recursively \n'));
+
+      bruJsons = getBruFilesRecursively(filename, testsOnly);
+    }
+  }
+  return bruJsons;
+}
