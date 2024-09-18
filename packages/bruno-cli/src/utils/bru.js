@@ -96,6 +96,36 @@ const getEnvVars = (environment = {}) => {
   return envVars;
 };
 
+/**
+ * Counts the test and assertion status results for a given request.
+ *
+ * @param {Object} result
+ * @returns {[number, number, number]} Result contains `[total, totalPassed, totalFailed]`
+ */
+const countResultStates = (result) => {
+  var total = 0;
+  var passed = 0;
+  var failed = 0;
+
+  if (result !== null && typeof result === 'object' && 'testResults' in result && result['testResults']) {
+    for (var test of result.testResults) {
+      total++;
+      if (test.status === 'pass') passed++;
+      else if (test.status === 'fail') failed++;
+    }
+  }
+
+  if (result !== null && typeof result === 'object' && 'assertionResults' in result && result['assertionResults']) {
+    for (var assert of result.assertionResults) {
+      total++;
+      if (assert.status === 'pass') passed++;
+      else if (assert.status === 'fail') failed++;
+    }
+  }
+
+  return [total, passed, failed];
+};
+
 const options = {};
 const getOptions = () => {
   return options;
@@ -106,5 +136,6 @@ module.exports = {
   bruToEnvJson,
   getEnvVars,
   getOptions,
-  collectionBruToJson
+  collectionBruToJson,
+  countResultStates
 };

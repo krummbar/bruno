@@ -7,6 +7,7 @@ const { runSingleRequest } = require('../runner/run-single-request');
 const { bruToEnvJson, getEnvVars } = require('../utils/bru');
 const makeJUnitOutput = require('../reporters/junit');
 const makeHtmlOutput = require('../reporters/html');
+const makeMarkdownOutput = require('../reporters/markdown');
 const { rpad } = require('../utils/common');
 const { bruToJson, getOptions, collectionBruToJson } = require('../utils/bru');
 const { dotenvToJson } = require('@usebruno/lang');
@@ -231,7 +232,7 @@ const builder = async (yargs) => {
     })
     .option('format', {
       alias: 'f',
-      describe: 'Format of the file results; available formats are "json" (default), "junit" or "html"',
+      describe: 'Format of the file results; available formats are "json" (default), "junit", "markdown" or "html"',
       default: 'json',
       type: 'string'
     })
@@ -280,10 +281,13 @@ const builder = async (yargs) => {
       'Run a request and write the results to results.html in html format in the current directory'
     )
     .example(
+      '$0 run request.bru --output results.md --format markdown',
+      'Run a request and write the results to results.md in markdown format in the current directory.'
+    )
+    .example(
       '$0 run request.bru --reporter-junit results.xml --reporter-html results.html',
       'Run a request and write the results to results.html in html format and results.xml in junit format in the current directory'
     )
-
     .example('$0 run request.bru --tests-only', 'Run all requests that have a test')
     .example(
       '$0 run request.bru --cacert myCustomCA.pem',
@@ -406,8 +410,8 @@ const handler = async function (argv) {
     }
     options['ignoreTruststore'] = ignoreTruststore;
 
-    if (['json', 'junit', 'html'].indexOf(format) === -1) {
-      console.error(chalk.red(`Format must be one of "json", "junit or "html"`));
+    if (['json', 'junit', 'html', 'markdown'].indexOf(format) === -1) {
+      console.error(chalk.red(`Format must be one of "json", "junit", "markdown" or "html"`));
       process.exit(constants.EXIT_STATUS.ERROR_INCORRECT_OUTPUT_FORMAT);
     }
 
@@ -573,6 +577,7 @@ const handler = async function (argv) {
         'json': (path) => fs.writeFileSync(path, JSON.stringify(outputJson, null, 2)),
         'junit': (path) => makeJUnitOutput(results, path),
         'html': (path) => makeHtmlOutput(outputJson, path),
+        'markdown': (path) => makeMarkdownOutput(outputJson, path, { Environment: env }),
       }
 
       for (const formatter of Object.keys(formats))

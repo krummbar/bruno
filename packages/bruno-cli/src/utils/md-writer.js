@@ -2,6 +2,11 @@ const { Writable } = require('stream');
 const os = require('os');
 
 /**
+ * @callback detailComposer
+ * @param {MdWriter} writer - The MdWriter instance passed through to the callback function
+ */
+
+/**
  * Wraps a writable stream and provides utility operations to compose a markdown document.
  *
  * @example
@@ -116,10 +121,100 @@ class MdWriter {
   }
 
   /**
+   * Add a header level 3 and empty line.
+   *
+   * @param {String} value
+   * @returns
+   *
+   * @example writer.h3('Title')
+   * // ### Title
+   * //
+   */
+  h3(value) {
+    return this.singleLine('### ' + value).singleLine();
+  }
+
+  /**
+   * Add a header level 4 and empty line
+   * 
+   * @param {String} value 
+   * @returns
+   * 
+   * @example writer.h4('Title')
+   * // #### Title
+   * // 
+   */
+  h4(value) {
+    return this.singleLine('#### ' + value).singleLine();
+  }
+
+  /**
+   * Adds a quotation block.
+   * 
+   * @param {String} value 
+   * @returns 
+   * 
+   * @example writer.quote('This is a quote');
+   * // > This is a quote
+   * //
+   */
+  quote(value) {
+    return this.singleLine('> ' + value).breakLine();
+  }
+
+  /**
+   * Inserts a collapsible details section.
+   *
+   * @example writer.details('Show details', c => c.singleLine('This request has failed due to many reasons.'));
+   * // <details>
+   * // <summary>Show details</summary>
+   * //
+   * // This request has failed due to many reasons.
+   * //
+   * // </summary>
+   *
+   * @param {String} title
+   * @param {detailComposer} contentComposer
+   * @returns
+   */
+  // prettier-ignore
+  details(title, contentComposer) {
+    this.singleLine('<details>')
+      .append('<summary>').append(title).append('</summary>').breakLine()
+      .breakLine();
+    contentComposer(this);
+    this.breakLine()
+      .singleLine('</details>');
+    return this;
+  }
+
+  /**
+   * Inserts a code snipped for an optional given language
+   * 
+   * @param {String} lang Optional language identifier
+   * @param {String} content The actual code content to insert inside the code block.
+   * @returns
+   * 
+   * @example writer.code('js', 'console.log("Hello world!"));
+   * // ```js
+   * // console.log("Hello world!");
+   * // ```
+   * //
+   */
+  code(lang, content) {
+    this.append('```');
+    if (lang) this.append(lang);
+    this.breakLine();
+    this.append(content).breakLine();
+    this.singleLine('```').breakLine();
+    return this;
+  }
+
+  /**
    * Inserts several columns formatted as table row.
    *
    * @param {...String} columns
-   * @return {MdWriter}
+   * @returns
    *
    * @example writer.tableRow('Iteration 1', 10, 6, 'Foobar')
    * // | Iteration 1 | 10 | 6 | Foobar |
